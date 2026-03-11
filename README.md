@@ -15,6 +15,17 @@ Switchboard is a desktop app that gives you a unified view of all your Claude Co
 - **Full-Text Search** — Find any session by what was discussed, not just when it happened
 - **Plans & Memory** — Browse and edit your plan files and CLAUDE.md memory in one place
 - **Activity Stats** — Heatmap of your coding activity across all projects
+- **Session Names** — Picks up session names from Claude Code's `/rename` command automatically
+
+## Download
+
+Grab the latest release for your platform:
+
+**[Download Switchboard](https://github.com/doctly/switchboard/releases/latest)**
+
+- **macOS**: `.dmg` (Apple Silicon & Intel)
+- **Windows**: `.exe` installer
+- **Linux**: `.AppImage` or `.deb`
 
 ## Prerequisites
 
