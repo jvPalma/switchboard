@@ -2750,6 +2750,8 @@ async function openSettingsViewer(scope, projectPath) {
   const maxAgeValue = fieldValue('sessionMaxAgeDays', 3);
   const themeValue = fieldValue('terminalTheme', 'switchboard');
   const mcpEmulationValue = fieldValue('mcpEmulation', true);
+  const webServerEnabledValue = fieldValue('webServerEnabled', false);
+  const webServerPortValue = fieldValue('webServerPort', 8081);
 
   settingsViewerBody.innerHTML = `
     <div class="settings-form">
@@ -2868,6 +2870,30 @@ async function openSettingsViewer(scope, projectPath) {
         </div>` : ''}
       </div>
 
+      ${!isProject ? `<div class="settings-section">
+        <div class="settings-section-title">Web Server</div>
+        <div class="settings-hint">Serve Switchboard as a web interface accessible from a browser.</div>
+
+        <div class="settings-field">
+          <div class="settings-field-header">
+            <span class="settings-label">Enable Web Interface</span>
+          </div>
+          <div class="settings-checkbox-row">
+            <input type="checkbox" id="sv-web-server-enabled" ${webServerEnabledValue ? 'checked' : ''}>
+            <label for="sv-web-server-enabled">Enable web interface (port ${webServerPortValue})</label>
+          </div>
+        </div>
+
+        <div class="settings-field">
+          <div class="settings-field-header">
+            <span class="settings-label">Port</span>
+          </div>
+          <input type="number" class="settings-input" id="sv-web-server-port" min="1" max="65535" placeholder="8081" value="${webServerPortValue}">
+        </div>
+
+        <div class="settings-hint">Changes take effect on restart.</div>
+      </div>` : ''}
+
       <button class="settings-save-btn" id="sv-save-btn">Save Settings</button>
       ${isProject ? '<button class="settings-remove-btn" id="sv-remove-btn">Remove Project</button>' : ''}
     </div>
@@ -2925,6 +2951,8 @@ async function openSettingsViewer(scope, projectPath) {
       settings.sessionMaxAgeDays = parseInt(settingsViewerBody.querySelector('#sv-max-age').value) || 3;
       settings.terminalTheme = settingsViewerBody.querySelector('#sv-terminal-theme').value || 'switchboard';
       settings.mcpEmulation = settingsViewerBody.querySelector('#sv-mcp-emulation').checked;
+      settings.webServerEnabled = settingsViewerBody.querySelector('#sv-web-server-enabled').checked;
+      settings.webServerPort = parseInt(settingsViewerBody.querySelector('#sv-web-server-port').value) || 8081;
     }
 
     // Preserve windowBounds and sidebarWidth if they exist

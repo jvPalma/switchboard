@@ -1,0 +1,6 @@
+[  135082ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8083/api/get-active-sessions:0
+[  135082ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8083/api/get-active-sessions:0
+[  135463ms] [ERROR] WebSocket connection to 'ws://localhost:8083/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:8083/app.bundle.js:3500
+[  137464ms] [ERROR] WebSocket connection to 'ws://localhost:8083/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:8083/app.bundle.js:3500
+[  138073ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8083/api/get-active-sessions:0
+[  138073ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8083/api/get-active-sessions:0

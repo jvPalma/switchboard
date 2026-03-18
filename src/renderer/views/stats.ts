@@ -1,0 +1,344 @@
+import type { StatsData, DailyActivityEntry, DailyModelTokensEntry } from '../api/types';
+import { escapeHtml } from '../utils';
+
+interface StreakResult {
+  current: number;
+  longest: number;
+}
+
+type DailyMap = Record<string, number>;
+
+const getStatsViewerBody = (): HTMLElement | null =>
+  document.getElementById('stats-viewer-body');
+
+const formatTokenCount = (tokens: number): string => {
+  if (tokens >= 1e9) return (tokens / 1e9).toFixed(1) + 'B';
+  if (tokens >= 1e6) return (tokens / 1e6).toFixed(1) + 'M';
+  if (tokens >= 1e3) return (tokens / 1e3).toFixed(1) + 'K';
+  return tokens.toLocaleString();
+};
+
+const calculateStreak = (counts: DailyMap): StreakResult => {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  let current = 0;
+  let longest = 0;
+  let streak = 0;
+
+  const d = new Date(today);
+  let started = false;
+  for (let i = 0; i < 365; i++) {
+    const dateStr = d.toISOString().slice(0, 10);
+    const count = counts[dateStr] || 0;
+    if (count > 0) {
+      streak++;
+      started = true;
+    } else {
+      if (started) {
+        if (!current) current = streak;
+        if (streak > longest) longest = streak;
+        streak = 0;
+        if (current) started = false;
+      }
+    }
+    d.setDate(d.getDate() - 1);
+  }
+  if (streak > longest) longest = streak;
+  if (!current && streak > 0) current = streak;
+
+  return { current, longest };
+};
+
+const buildDailyBarChart = (stats: StatsData, container: HTMLElement): void => {
+  const rawTokens = stats.dailyModelTokens || [];
+  const rawActivity = stats.dailyActivity || [];
+
+  // Build maps for last 30 days
+  const tokenMap: Record<string, number> = {};
+  if (Array.isArray(rawTokens)) {
+    for (const entry of rawTokens as DailyModelTokensEntry[]) {
+      let total = 0;
+      for (const count of Object.values(entry.tokensByModel || {})) total += count;
+      tokenMap[entry.date] = total;
+    }
+  }
+  const activityMap: Record<string, DailyActivityEntry> = {};
+  if (Array.isArray(rawActivity)) {
+    for (const entry of rawActivity as DailyActivityEntry[]) activityMap[entry.date] = entry;
+  }
+
+  // Generate last 30 days
+  const days: string[] = [];
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  for (let i = 29; i >= 0; i--) {
+    const d = new Date(today);
+    d.setDate(d.getDate() - i);
+    days.push(d.toISOString().slice(0, 10));
+  }
+
+  const tokenValues = days.map(d => tokenMap[d] || 0);
+  const msgValues = days.map(d => activityMap[d]?.messageCount || 0);
+  const toolValues = days.map(d => activityMap[d]?.toolCallCount || 0);
+  const maxTokens = Math.max(...tokenValues, 1);
+  const maxMsgs = Math.max(...msgValues, 1);
+
+  const wrapper = document.createElement('div');
+  wrapper.className = 'daily-chart-container';
+
+  const title = document.createElement('div');
+  title.className = 'daily-chart-title';
+  title.textContent = 'Last 30 days';
+  wrapper.appendChild(title);
+
+  const chart = document.createElement('div');
+  chart.className = 'daily-chart';
+
+  for (let i = 0; i < days.length; i++) {
+    const tokenVal = tokenValues[i] ?? 0;
+    const msgVal = msgValues[i] ?? 0;
+    const toolVal = toolValues[i] ?? 0;
+    const dayStr = days[i] ?? '';
+
+    const col = document.createElement('div');
+    col.className = 'daily-chart-col';
+
+    const bar = document.createElement('div');
+    bar.className = 'daily-chart-bar';
+    const pct = (tokenVal / maxTokens) * 100;
+    bar.style.height = Math.max(pct, tokenVal > 0 ? 3 : 0) + '%';
+
+    const msgPct = (msgVal / maxMsgs) * 100;
+    const msgBar = document.createElement('div');
+    msgBar.className = 'daily-chart-bar-msgs';
+    msgBar.style.height = Math.max(msgPct, msgVal > 0 ? 3 : 0) + '%';
+
+    const d = new Date(dayStr);
+    const dayLabel = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    const tokStr = formatTokenCount(tokenVal);
+    col.title = `${dayLabel}\n${tokStr} tokens\n${msgVal} messages\n${toolVal} tool calls`;
+
+    const label = document.createElement('div');
+    label.className = 'daily-chart-label';
+    label.textContent = d.getDate().toString();
+
+    col.appendChild(bar);
+    col.appendChild(msgBar);
+    col.appendChild(label);
+    chart.appendChild(col);
+  }
+
+  wrapper.appendChild(chart);
+
+  // Legend
+  const legend = document.createElement('div');
+  legend.className = 'daily-chart-legend';
+  legend.innerHTML = '<span class="daily-chart-legend-dot tokens"></span> Tokens <span class="daily-chart-legend-dot msgs"></span> Messages';
+  wrapper.appendChild(legend);
+
+  container.appendChild(wrapper);
+};
+
+const buildHeatmap = (counts: DailyMap, container: HTMLElement): void => {
+  const heatmapContainer = document.createElement('div');
+  heatmapContainer.className = 'heatmap-container';
+
+  // Generate 52 weeks of dates ending today
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const dayOfWeek = today.getDay(); // 0=Sun
+  const endDate = new Date(today);
+  const startDate = new Date(today);
+  startDate.setDate(startDate.getDate() - (52 * 7 + dayOfWeek));
+
+  // Month labels
+  const monthLabels = document.createElement('div');
+  monthLabels.className = 'heatmap-month-labels';
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  let lastMonth = -1;
+  const weekStarts: Date[] = [];
+  const d = new Date(startDate);
+  while (d <= endDate) {
+    if (d.getDay() === 0) {
+      weekStarts.push(new Date(d));
+    }
+    d.setDate(d.getDate() + 1);
+  }
+
+  // Calculate month label positions
+  const colWidth = 16; // 13px cell + 3px gap
+  for (let w = 0; w < weekStarts.length; w++) {
+    const weekStart = weekStarts[w];
+    if (!weekStart) continue;
+    const m = weekStart.getMonth();
+    if (m !== lastMonth) {
+      const label = document.createElement('span');
+      label.className = 'heatmap-month-label';
+      label.textContent = months[m] ?? '';
+      label.style.position = 'absolute';
+      label.style.left = (w * colWidth) + 'px';
+      monthLabels.appendChild(label);
+      lastMonth = m;
+    }
+  }
+  monthLabels.style.position = 'relative';
+  monthLabels.style.height = '16px';
+  heatmapContainer.appendChild(monthLabels);
+
+  // Grid wrapper (day labels + grid)
+  const wrapper = document.createElement('div');
+  wrapper.className = 'heatmap-grid-wrapper';
+
+  // Day labels
+  const dayLabelsEl = document.createElement('div');
+  dayLabelsEl.className = 'heatmap-day-labels';
+  const dayNames = ['', 'Mon', '', 'Wed', '', 'Fri', ''];
+  for (const name of dayNames) {
+    const label = document.createElement('div');
+    label.className = 'heatmap-day-label';
+    label.textContent = name;
+    dayLabelsEl.appendChild(label);
+  }
+  wrapper.appendChild(dayLabelsEl);
+
+  // Quartile thresholds
+  const nonZero = Object.values(counts).filter(c => c > 0).sort((a, b) => a - b);
+  const q1 = nonZero[Math.floor(nonZero.length * 0.25)] || 1;
+  const q2 = nonZero[Math.floor(nonZero.length * 0.5)] || 2;
+  const q3 = nonZero[Math.floor(nonZero.length * 0.75)] || 3;
+
+  // Grid
+  const grid = document.createElement('div');
+  grid.className = 'heatmap-grid';
+
+  const cursor = new Date(startDate);
+  while (cursor <= endDate) {
+    const dateStr = cursor.toISOString().slice(0, 10);
+    const count = counts[dateStr] || 0;
+    let level = 0;
+    if (count > 0) {
+      if (count <= q1) level = 1;
+      else if (count <= q2) level = 2;
+      else if (count <= q3) level = 3;
+      else level = 4;
+    }
+
+    const cell = document.createElement('div');
+    cell.className = `heatmap-cell heatmap-level-${level}`;
+    const displayDate = cursor.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    cell.title = count > 0 ? `${displayDate}: ${count} messages` : `${displayDate}: No activity`;
+    grid.appendChild(cell);
+
+    cursor.setDate(cursor.getDate() + 1);
+  }
+
+  wrapper.appendChild(grid);
+  heatmapContainer.appendChild(wrapper);
+
+  // Legend
+  const legend = document.createElement('div');
+  legend.className = 'heatmap-legend';
+  const lessLabel = document.createElement('span');
+  lessLabel.className = 'heatmap-legend-label';
+  lessLabel.textContent = 'Less';
+  legend.appendChild(lessLabel);
+  for (let i = 0; i <= 4; i++) {
+    const cell = document.createElement('div');
+    cell.className = `heatmap-legend-cell heatmap-level-${i}`;
+    legend.appendChild(cell);
+  }
+  const moreLabel = document.createElement('span');
+  moreLabel.className = 'heatmap-legend-label';
+  moreLabel.textContent = 'More';
+  legend.appendChild(moreLabel);
+  heatmapContainer.appendChild(legend);
+
+  container.appendChild(heatmapContainer);
+};
+
+const buildStatsSummary = (stats: StatsData, dailyMap: DailyMap, container: HTMLElement): void => {
+  const summaryEl = document.createElement('div');
+  summaryEl.className = 'stats-summary';
+
+  const { current: currentStreak, longest: longestStreak } = calculateStreak(dailyMap);
+
+  // Total messages from map
+  let totalMessages = 0;
+  for (const count of Object.values(dailyMap)) {
+    totalMessages += count;
+  }
+  // Prefer stats.totalMessages if available and larger
+  if (stats.totalMessages && stats.totalMessages > totalMessages) {
+    totalMessages = stats.totalMessages;
+  }
+
+  const totalSessions = stats.totalSessions || Object.keys(dailyMap).length;
+
+  // Model usage -- values are objects with token counts, show as cards
+  const models = stats.modelUsage || {};
+
+  const cards: { value: string; label: string }[] = [
+    { value: totalSessions.toLocaleString(), label: 'Total Sessions' },
+    { value: totalMessages.toLocaleString(), label: 'Total Messages' },
+    { value: currentStreak + 'd', label: 'Current Streak' },
+    { value: longestStreak + 'd', label: 'Longest Streak' },
+  ];
+
+  for (const [model, usage] of Object.entries(models)) {
+    const shortName = model.replace(/^claude-/, '').replace(/-\d{8}$/, '');
+    const tokens = (usage?.inputTokens || 0) + (usage?.outputTokens || 0);
+    const valueStr = formatTokenCount(tokens);
+    cards.push({ value: valueStr, label: shortName + ' tokens' });
+  }
+
+  for (const card of cards) {
+    const el = document.createElement('div');
+    el.className = 'stat-card';
+    el.innerHTML = `<span class="stat-card-value">${escapeHtml(card.value)}</span><span class="stat-card-label">${escapeHtml(card.label)}</span>`;
+    summaryEl.appendChild(el);
+  }
+
+  container.appendChild(summaryEl);
+};
+
+export const loadStats = async (): Promise<void> => {
+  const statsViewerBody = getStatsViewerBody();
+  if (!statsViewerBody) return;
+
+  const stats = await window.api.getStats();
+  statsViewerBody.innerHTML = '';
+
+  if (!stats) {
+    statsViewerBody.innerHTML = '<div class="plans-empty">No stats data found. Run some Claude sessions first.</div>';
+    return;
+  }
+
+  // dailyActivity may be an array of {date, messageCount, ...} or an object
+  const rawDaily = stats.dailyActivity || {};
+  const dailyMap: DailyMap = {};
+  if (Array.isArray(rawDaily)) {
+    for (const entry of rawDaily as DailyActivityEntry[]) {
+      dailyMap[entry.date] = entry.messageCount || 0;
+    }
+  } else {
+    for (const [date, data] of Object.entries(rawDaily)) {
+      dailyMap[date] = typeof data === 'number'
+        ? data
+        : ((data as Record<string, number>)?.messageCount
+          || (data as Record<string, number>)?.messages
+          || (data as Record<string, number>)?.count
+          || 0);
+    }
+  }
+
+  buildHeatmap(dailyMap, statsViewerBody);
+  buildDailyBarChart(stats, statsViewerBody);
+  buildStatsSummary(stats, dailyMap, statsViewerBody);
+
+  const notice = document.createElement('div');
+  notice.className = 'stats-notice';
+  const lastDate = stats.lastComputedDate || 'unknown';
+  notice.innerHTML = `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" style="vertical-align:-2px;margin-right:6px;flex-shrink:0"><circle cx="8" cy="8" r="7"/><line x1="8" y1="5" x2="8" y2="9"/><circle cx="8" cy="11.5" r="0.5" fill="currentColor" stroke="none"/></svg>Data sourced from Claude\u2019s stats cache (last updated ${escapeHtml(lastDate)}). Run <code>/stats</code> in a Claude session to refresh.`;
+  statsViewerBody.appendChild(notice);
+};

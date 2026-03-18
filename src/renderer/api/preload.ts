@@ -1,0 +1,110 @@
+// Electron preload script — runs in an isolated context before the renderer.
+// Exposes a typed `window.api` via contextBridge.
+// This file is bundled separately into dist/preload.js (NOT part of the renderer bundle).
+
+import { contextBridge, ipcRenderer } from 'electron';
+import type { SwitchboardApi } from './types';
+
+const api: SwitchboardApi = {
+  // Invoke (request-response)
+  getPlans: () => ipcRenderer.invoke('get-plans'),
+  readPlan: (filename) => ipcRenderer.invoke('read-plan', filename),
+  savePlan: (filePath, content) => ipcRenderer.invoke('save-plan', filePath, content),
+  getStats: () => ipcRenderer.invoke('get-stats'),
+  getMemories: () => ipcRenderer.invoke('get-memories'),
+  readMemory: (filePath) => ipcRenderer.invoke('read-memory', filePath),
+  getProjects: (showArchived) => ipcRenderer.invoke('get-projects', showArchived),
+  getActiveSessions: () => ipcRenderer.invoke('get-active-sessions'),
+  getActiveTerminals: () => ipcRenderer.invoke('get-active-terminals'),
+  stopSession: (id) => ipcRenderer.invoke('stop-session', id),
+  toggleStar: (id) => ipcRenderer.invoke('toggle-star', id),
+  renameSession: (id, name) => ipcRenderer.invoke('rename-session', id, name),
+  archiveSession: (id, archived) => ipcRenderer.invoke('archive-session', id, archived),
+  openTerminal: (id, projectPath, isNew, sessionOptions) =>
+    ipcRenderer.invoke('open-terminal', id, projectPath, isNew, sessionOptions),
+  search: (type, query) => ipcRenderer.invoke('search', type, query),
+  readSessionJsonl: (sessionId) => ipcRenderer.invoke('read-session-jsonl', sessionId),
+  tailSessionJsonl: (sessionId) => ipcRenderer.invoke('tail-session-jsonl', sessionId),
+  stopTailSessionJsonl: (sessionId) => ipcRenderer.invoke('stop-tail-session-jsonl', sessionId),
+
+  // Settings
+  getSetting: (key) => ipcRenderer.invoke('get-setting', key),
+  setSetting: (key, value) => ipcRenderer.invoke('set-setting', key, value),
+  deleteSetting: (key) => ipcRenderer.invoke('delete-setting', key),
+  getEffectiveSettings: (projectPath) => ipcRenderer.invoke('get-effective-settings', projectPath),
+
+  browseFolder: () => ipcRenderer.invoke('browse-folder'),
+  addProject: (projectPath) => ipcRenderer.invoke('add-project', projectPath),
+  removeProject: (projectPath) => ipcRenderer.invoke('remove-project', projectPath),
+  openExternal: (url) => ipcRenderer.invoke('open-external', url),
+
+  // File panel
+  readFileForPanel: (filePath) => ipcRenderer.invoke('read-file-for-panel', filePath),
+
+  // Auto-updater
+  updaterCheck: () => ipcRenderer.invoke('updater-check'),
+  updaterDownload: () => ipcRenderer.invoke('updater-download'),
+  updaterInstall: () => ipcRenderer.invoke('updater-install'),
+
+  // Send (fire-and-forget)
+  sendInput: (id, data) => ipcRenderer.send('terminal-input', id, data),
+  resizeTerminal: (id, cols, rows) => ipcRenderer.send('terminal-resize', id, cols, rows),
+  closeTerminal: (id) => ipcRenderer.send('close-terminal', id),
+
+  // MCP bridge (renderer -> main)
+  mcpDiffResponse: (sessionId, diffId, action, editedContent) => {
+    ipcRenderer.send('mcp-diff-response', sessionId, diffId, action, editedContent);
+  },
+
+  // Listeners (main -> renderer)
+  onTerminalData: (callback) => {
+    ipcRenderer.on('terminal-data', (_event, sessionId, data) => callback(sessionId, data));
+  },
+  onSessionDetected: (callback) => {
+    ipcRenderer.on('session-detected', (_event, tempId, realId) => callback(tempId, realId));
+  },
+  onProcessExited: (callback) => {
+    ipcRenderer.on('process-exited', (_event, sessionId, exitCode) => callback(sessionId, exitCode));
+  },
+  onProgressState: (callback) => {
+    ipcRenderer.on('progress-state', (_event, sessionId, state, percent) => callback(sessionId, state, percent));
+  },
+  onTerminalNotification: (callback) => {
+    ipcRenderer.on('terminal-notification', (_event, sessionId, message) => callback(sessionId, message));
+  },
+  onSessionForked: (callback) => {
+    ipcRenderer.on('session-forked', (_event, oldId, newId) => callback(oldId, newId));
+  },
+  onProjectsChanged: (callback) => {
+    ipcRenderer.on('projects-changed', () => callback());
+  },
+  onStatusUpdate: (callback) => {
+    ipcRenderer.on('status-update', (_event, text, type) => callback(text, type));
+  },
+
+  // Auto-updater events
+  onUpdaterEvent: (callback) => {
+    ipcRenderer.on('updater-event', (_event, type, data) => callback(type, data));
+  },
+
+  // Session tailing (main -> renderer)
+  onTailSessionJsonl: (callback) => {
+    ipcRenderer.on('tail-session-jsonl', (_event, sessionId, newLines) => callback(sessionId, newLines));
+  },
+
+  // MCP bridge (main -> renderer)
+  onMcpOpenDiff: (callback) => {
+    ipcRenderer.on('mcp-open-diff', (_event, sessionId, diffId, data) => callback(sessionId, diffId, data));
+  },
+  onMcpOpenFile: (callback) => {
+    ipcRenderer.on('mcp-open-file', (_event, sessionId, data) => callback(sessionId, data));
+  },
+  onMcpCloseAllDiffs: (callback) => {
+    ipcRenderer.on('mcp-close-all-diffs', (_event, sessionId) => callback(sessionId));
+  },
+  onMcpCloseTab: (callback) => {
+    ipcRenderer.on('mcp-close-tab', (_event, sessionId, diffId) => callback(sessionId, diffId));
+  },
+};
+
+contextBridge.exposeInMainWorld('api', api);

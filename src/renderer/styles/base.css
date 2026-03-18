@@ -1,0 +1,107 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', sans-serif;
+  background: #111118;
+  color: #e0e0e0;
+  overflow: hidden;
+}
+
+body { display: flex; flex-direction: column; }
+
+#app-container {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* ========== UPDATE TOAST ========== */
+#update-toast {
+  position: fixed;
+  bottom: 32px;
+  right: 12px;
+  background: #1a1a2e;
+  border: 1px solid rgba(128,136,255,0.3);
+  border-radius: 6px;
+  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: #c0c0d0;
+  z-index: 9999;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+  animation: toast-slide-in 0.3s ease-out;
+}
+#update-toast.hidden { display: none; }
+#update-toast-msg { white-space: nowrap; line-height: 1.4; }
+.update-version { color: #8088ff; font-size: 11px; }
+#update-restart-btn {
+  background: #8088ff;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  padding: 3px 10px;
+  font-size: 11px;
+  cursor: pointer;
+}
+#update-restart-btn:hover { background: #6a72e0; }
+#update-dismiss-btn {
+  background: none;
+  border: none;
+  color: #666;
+  font-size: 11px;
+  cursor: pointer;
+  padding: 3px 4px;
+}
+#update-dismiss-btn:hover { color: #999; }
+@keyframes toast-slide-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* ========== STATUS BAR ========== */
+#status-bar {
+  height: 22px;
+  min-height: 22px;
+  background: #0e0e14;
+  border-top: 1px solid rgba(255,255,255,0.06);
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  font-size: 11px;
+  color: #555568;
+  gap: 12px;
+  z-index: 100;
+}
+
+#status-bar-info {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#status-bar-activity {
+  margin-left: auto;
+  white-space: nowrap;
+  color: #8088ff;
+}
+
+#status-bar-activity.status-done {
+  color: #4a9;
+}
+
+#status-bar-updater {
+  white-space: nowrap;
+  color: #888;
+  font-style: italic;
+}
+
+/* ========== SCROLLBAR ========== */
+#sidebar-content::-webkit-scrollbar, #plans-content::-webkit-scrollbar { width: 5px; }
+#sidebar-content::-webkit-scrollbar-track, #plans-content::-webkit-scrollbar-track { background: transparent; }
+#sidebar-content::-webkit-scrollbar-thumb, #plans-content::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.06); border-radius: 3px; }
+#sidebar-content::-webkit-scrollbar-thumb:hover, #plans-content::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.1); }
+

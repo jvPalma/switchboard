@@ -7,6 +7,7 @@ const pty = require('node-pty');
 const log = require('electron-log');
 const { getFolderIndexMtimeMs } = require('./folder-index-state');
 const { startMcpServer, shutdownMcpServer, shutdownAll: shutdownAllMcp, resolvePendingDiff, rekeyMcpServer, cleanStaleLockFiles } = require('./mcp-bridge');
+const { createWebServer } = require('./web-server');
 log.transports.file.level = app.isPackaged ? 'info' : 'debug';
 log.transports.console.level = app.isPackaged ? 'info' : 'debug';
 
@@ -37,6 +38,7 @@ if (app.isPackaged || process.env.FORCE_UPDATER) {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('updater-event', type, data);
     }
+    broadcastToWeb('updater-event', type, data);
   }
   autoUpdater.on('checking-for-update', () => sendUpdaterEvent('checking'));
   autoUpdater.on('update-available', (info) => sendUpdaterEvent('update-available', info));
@@ -48,6 +50,7 @@ if (app.isPackaged || process.env.FORCE_UPDATER) {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('updater-event', 'error', { message: err?.message || String(err) });
     }
+    broadcastToWeb('updater-event', 'error', { message: err?.message || String(err) });
   });
 }
 const {
@@ -70,6 +73,7 @@ const MAX_BUFFER_SIZE = 256 * 1024;
 // Active PTY sessions
 const activeSessions = new Map();
 let mainWindow = null;
+let webServer = null;
 
 function createWindow() {
   // Restore saved window bounds
@@ -525,6 +529,7 @@ function notifyRendererProjectsChanged() {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('projects-changed');
   }
+  broadcastToWeb('projects-changed');
 }
 
 function sendStatus(text, type) {
@@ -532,6 +537,7 @@ function sendStatus(text, type) {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('status-update', text, type || 'info');
   }
+  broadcastToWeb('status-update', text, type || 'info');
 }
 
 // --- Worker-based cache population (non-blocking) ---
@@ -609,8 +615,65 @@ function populateCacheViaWorker() {
   });
 }
 
+// --- API handler registry (shared between IPC and web server) ---
+const apiHandlers = {};
+
+function registerHandler(channel, fn) {
+  apiHandlers[channel] = fn;
+  ipcMain.handle(channel, (_event, ...args) => fn(...args));
+}
+
+// --- Web server broadcast (connected in task 5) ---
+let webBroadcast = () => {};
+
+function setWebBroadcast(fn) {
+  webBroadcast = fn;
+}
+
+function broadcastToWeb(type, ...args) {
+  webBroadcast({ type, args });
+}
+
+// --- WebSocket message handler (called by web-server.js onWsMessage) ---
+function handleWebSocketMessage(msg) {
+  const session = msg.sessionId ? activeSessions.get(msg.sessionId) : null;
+  switch (msg.type) {
+    case 'terminal-input':
+      if (session && !session.exited) session.pty.write(msg.data);
+      break;
+    case 'terminal-resize':
+      if (session && !session.exited) session.pty.resize(msg.cols, msg.rows);
+      break;
+    case 'close-terminal':
+      if (session && !session.exited) {
+        try { session.pty.kill(); } catch {}
+      }
+      break;
+    case 'mcp-diff-response':
+      resolvePendingDiff(msg.sessionId, msg.diffId, msg.action, msg.editedContent || null);
+      break;
+  }
+}
+
+// --- MCP window proxy (broadcasts MCP events to web clients) ---
+function createMcpWindowProxy() {
+  return {
+    isDestroyed() {
+      return !mainWindow || mainWindow.isDestroyed();
+    },
+    webContents: {
+      send(channel, ...args) {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send(channel, ...args);
+        }
+        broadcastToWeb(channel, ...args);
+      }
+    }
+  };
+}
+
 // --- IPC: browse-folder ---
-ipcMain.handle('browse-folder', async () => {
+registerHandler('browse-folder', async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
     properties: ['openDirectory', 'createDirectory'],
     title: 'Select Project Folder',
@@ -620,7 +683,7 @@ ipcMain.handle('browse-folder', async () => {
 });
 
 // --- IPC: add-project ---
-ipcMain.handle('add-project', (_event, projectPath) => {
+registerHandler('add-project', (projectPath) => {
   try {
     // Validate the path exists and is a directory
     const stat = fs.statSync(projectPath);
@@ -660,7 +723,7 @@ ipcMain.handle('add-project', (_event, projectPath) => {
 });
 
 // --- IPC: remove-project ---
-ipcMain.handle('remove-project', (_event, projectPath) => {
+registerHandler('remove-project', (projectPath) => {
   try {
     // Add to hidden projects list
     const global = getSetting('global') || {};
@@ -683,7 +746,7 @@ ipcMain.handle('remove-project', (_event, projectPath) => {
 });
 
 // --- IPC: get-projects ---
-ipcMain.handle('open-external', (_event, url) => {
+registerHandler('open-external', (url) => {
   log.info('[open-external IPC]', url);
   if (/^https?:\/\//i.test(url)) return shell.openExternal(url);
 });
@@ -693,7 +756,7 @@ ipcMain.on('mcp-diff-response', (_event, sessionId, diffId, action, editedConten
   resolvePendingDiff(sessionId, diffId, action, editedContent);
 });
 
-ipcMain.handle('read-file-for-panel', async (_event, filePath) => {
+registerHandler('read-file-for-panel', async (filePath) => {
   try {
     const content = fs.readFileSync(filePath, 'utf8');
     return { ok: true, content };
@@ -702,7 +765,7 @@ ipcMain.handle('read-file-for-panel', async (_event, filePath) => {
   }
 });
 
-ipcMain.handle('get-projects', (_event, showArchived) => {
+registerHandler('get-projects', (showArchived) => {
   try {
     const needsPopulate = !isCachePopulated() || !isSearchIndexPopulated();
 
@@ -719,7 +782,7 @@ ipcMain.handle('get-projects', (_event, showArchived) => {
 });
 
 // --- IPC: get-plans ---
-ipcMain.handle('get-plans', () => {
+registerHandler('get-plans', () => {
   try {
     if (!fs.existsSync(PLANS_DIR)) return [];
     const files = fs.readdirSync(PLANS_DIR).filter(f => f.endsWith('.md'));
@@ -756,7 +819,7 @@ ipcMain.handle('get-plans', () => {
 });
 
 // --- IPC: read-plan ---
-ipcMain.handle('read-plan', (_event, filename) => {
+registerHandler('read-plan', (filename) => {
   try {
     const filePath = path.join(PLANS_DIR, path.basename(filename));
     const content = fs.readFileSync(filePath, 'utf8');
@@ -768,7 +831,7 @@ ipcMain.handle('read-plan', (_event, filename) => {
 });
 
 // --- IPC: save-plan ---
-ipcMain.handle('save-plan', (_event, filePath, content) => {
+registerHandler('save-plan', (filePath, content) => {
   try {
     const resolved = path.resolve(filePath);
     if (!resolved.startsWith(PLANS_DIR)) {
@@ -783,7 +846,7 @@ ipcMain.handle('save-plan', (_event, filePath, content) => {
 });
 
 // --- IPC: get-stats ---
-ipcMain.handle('get-stats', () => {
+registerHandler('get-stats', () => {
   try {
     if (!fs.existsSync(STATS_CACHE_PATH)) return null;
     const raw = fs.readFileSync(STATS_CACHE_PATH, 'utf8');
@@ -803,7 +866,7 @@ function folderToShortPath(folder) {
   return meaningful.slice(-2).join('/');
 }
 
-ipcMain.handle('get-memories', () => {
+registerHandler('get-memories', () => {
   const memories = [];
   try {
     // Global CLAUDE.md
@@ -883,7 +946,7 @@ ipcMain.handle('get-memories', () => {
 });
 
 // --- IPC: read-memory ---
-ipcMain.handle('read-memory', (_event, filePath) => {
+registerHandler('read-memory', (filePath) => {
   try {
     // Validate path is under ~/.claude/
     const resolved = path.resolve(filePath);
@@ -898,21 +961,21 @@ ipcMain.handle('read-memory', (_event, filePath) => {
 });
 
 // --- IPC: search ---
-ipcMain.handle('search', (_event, type, query) => {
+registerHandler('search', (type, query) => {
   return searchByType(type, query, 50);
 });
 
 // --- IPC: settings ---
-ipcMain.handle('get-setting', (_event, key) => {
+registerHandler('get-setting', (key) => {
   return getSetting(key);
 });
 
-ipcMain.handle('set-setting', (_event, key, value) => {
+registerHandler('set-setting', (key, value) => {
   setSetting(key, value);
   return { ok: true };
 });
 
-ipcMain.handle('delete-setting', (_event, key) => {
+registerHandler('delete-setting', (key) => {
   deleteSetting(key);
   return { ok: true };
 });
@@ -929,9 +992,11 @@ const SETTING_DEFAULTS = {
   sidebarWidth: 340,
   terminalTheme: 'switchboard',
   mcpEmulation: false,
+  webServerEnabled: true,
+  webServerPort: 8081,
 };
 
-ipcMain.handle('get-effective-settings', (_event, projectPath) => {
+registerHandler('get-effective-settings', (projectPath) => {
   const global = getSetting('global') || {};
   const project = projectPath ? (getSetting('project:' + projectPath) || {}) : {};
   const effective = { ...SETTING_DEFAULTS };
@@ -947,7 +1012,7 @@ ipcMain.handle('get-effective-settings', (_event, projectPath) => {
 });
 
 // --- IPC: get-active-sessions ---
-ipcMain.handle('get-active-sessions', () => {
+registerHandler('get-active-sessions', () => {
   const active = [];
   for (const [sessionId, session] of activeSessions) {
     if (!session.exited) active.push(sessionId);
@@ -956,7 +1021,7 @@ ipcMain.handle('get-active-sessions', () => {
 });
 
 // --- IPC: get-active-terminals --- (plain terminal sessions for renderer restore)
-ipcMain.handle('get-active-terminals', () => {
+registerHandler('get-active-terminals', () => {
   const terminals = [];
   for (const [sessionId, session] of activeSessions) {
     if (!session.exited && session.isPlainTerminal) {
@@ -967,7 +1032,7 @@ ipcMain.handle('get-active-terminals', () => {
 });
 
 // --- IPC: stop-session ---
-ipcMain.handle('stop-session', (_event, sessionId) => {
+registerHandler('stop-session', (sessionId) => {
   const session = activeSessions.get(sessionId);
   if (!session || session.exited) return { ok: false, error: 'not running' };
   session.pty.kill();
@@ -975,13 +1040,13 @@ ipcMain.handle('stop-session', (_event, sessionId) => {
 });
 
 // --- IPC: toggle-star ---
-ipcMain.handle('toggle-star', (_event, sessionId) => {
+registerHandler('toggle-star', (sessionId) => {
   const starred = toggleStar(sessionId);
   return { starred };
 });
 
 // --- IPC: rename-session ---
-ipcMain.handle('rename-session', (_event, sessionId, name) => {
+registerHandler('rename-session', (sessionId, name) => {
   setName(sessionId, name || null);
   // Update search index title to include the new name
   const cached = getCachedSession(sessionId);
@@ -991,7 +1056,7 @@ ipcMain.handle('rename-session', (_event, sessionId, name) => {
 });
 
 // --- IPC: archive-session ---
-ipcMain.handle('read-session-jsonl', (_event, sessionId) => {
+registerHandler('read-session-jsonl', (sessionId) => {
   const folder = getCachedFolder(sessionId);
   if (!folder) return { error: 'Session not found in cache' };
   const jsonlPath = path.join(PROJECTS_DIR, folder, sessionId + '.jsonl');
@@ -1008,14 +1073,14 @@ ipcMain.handle('read-session-jsonl', (_event, sessionId) => {
   }
 });
 
-ipcMain.handle('archive-session', (_event, sessionId, archived) => {
+registerHandler('archive-session', (sessionId, archived) => {
   const val = archived ? 1 : 0;
   setArchived(sessionId, val);
   return { archived: val };
 });
 
 // --- IPC: open-terminal ---
-ipcMain.handle('open-terminal', async (_event, sessionId, projectPath, isNew, sessionOptions) => {
+registerHandler('open-terminal', async (sessionId, projectPath, isNew, sessionOptions) => {
   if (!mainWindow) return { ok: false, error: 'no window' };
 
   // Reattach to existing session
@@ -1027,17 +1092,20 @@ ipcMain.handle('open-terminal', async (_event, sessionId, projectPath, isNew, se
     // If TUI is in alternate screen mode, send escape to switch into it
     if (session.altScreen && !session.isPlainTerminal) {
       mainWindow.webContents.send('terminal-data', sessionId, '\x1b[?1049h');
+      broadcastToWeb('terminal-data', sessionId, '\x1b[?1049h');
     }
 
     // Send buffered output for reattach
     for (const chunk of session.outputBuffer) {
       mainWindow.webContents.send('terminal-data', sessionId, chunk);
+      broadcastToWeb('terminal-data', sessionId, chunk);
     }
 
     if (!session.isPlainTerminal) {
       // Hide cursor after buffer replay — the live PTY stream or resize nudge
       // will re-show it at the correct position, avoiding a stale cursor artifact
       mainWindow.webContents.send('terminal-data', sessionId, '\x1b[?25l');
+      broadcastToWeb('terminal-data', sessionId, '\x1b[?25l');
     }
 
     return { ok: true, reattached: true, mcpActive: !!session.mcpServer };
@@ -1152,7 +1220,7 @@ ipcMain.handle('open-terminal', async (_event, sessionId, projectPath, isNew, se
       // (skip if user disabled IDE emulation in global settings)
       if (sessionOptions?.mcpEmulation !== false) {
         try {
-          mcpServer = await startMcpServer(sessionId, [projectPath], mainWindow, log);
+          mcpServer = await startMcpServer(sessionId, [projectPath], createMcpWindowProxy(), log);
           claudeCmd += ' --ide';
         } catch (err) {
           log.error(`[mcp] Failed to start MCP server for ${sessionId}: ${err.message}`);
@@ -1214,6 +1282,7 @@ ipcMain.handle('open-terminal', async (_event, sessionId, projectPath, isNew, se
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send('terminal-notification', currentId, message);
         }
+        broadcastToWeb('terminal-notification', currentId, message);
       }
 
       // Parse iTerm2 OSC 9;4 progress sequences
@@ -1225,6 +1294,7 @@ ipcMain.handle('open-terminal', async (_event, sessionId, projectPath, isNew, se
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send('progress-state', currentId, state, percent);
         }
+        broadcastToWeb('progress-state', currentId, state, percent);
       }
     }
 
@@ -1257,6 +1327,7 @@ ipcMain.handle('open-terminal', async (_event, sessionId, projectPath, isNew, se
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('terminal-data', currentId, data);
     }
+    broadcastToWeb('terminal-data', currentId, data);
   });
 
   ptyProcess.onExit(({ exitCode }) => {
@@ -1275,6 +1346,10 @@ ipcMain.handle('open-terminal', async (_event, sessionId, projectPath, isNew, se
       if (realId !== sessionId && activeSessions.has(sessionId)) {
         mainWindow.webContents.send('process-exited', sessionId, exitCode);
       }
+    }
+    broadcastToWeb('process-exited', realId, exitCode);
+    if (realId !== sessionId && activeSessions.has(sessionId)) {
+      broadcastToWeb('process-exited', sessionId, exitCode);
     }
     activeSessions.delete(realId);
     // Clean up the original key too in case transition detection hasn't run yet
@@ -1467,6 +1542,7 @@ function detectSessionTransitions(folder) {
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send('session-forked', sessionId, newId);
         }
+        broadcastToWeb('session-forked', sessionId, newId);
         break; // Only one transition per session per flush
       }
     }
@@ -1541,15 +1617,15 @@ function startProjectsWatcher() {
 }
 
 // --- IPC: auto-updater ---
-ipcMain.handle('updater-check', () => {
+registerHandler('updater-check', () => {
   if (!autoUpdater) return { available: false, dev: true };
   return autoUpdater.checkForUpdates();
 });
-ipcMain.handle('updater-download', () => {
+registerHandler('updater-download', () => {
   if (!autoUpdater) return;
   return autoUpdater.downloadUpdate();
 });
-ipcMain.handle('updater-install', () => {
+registerHandler('updater-install', () => {
   if (!autoUpdater) return;
   autoUpdater.quitAndInstall();
 });
@@ -1582,6 +1658,52 @@ app.whenReady().then(() => {
   createWindow();
   startProjectsWatcher();
 
+  // Start web server if enabled
+  const globalSettings = getSetting('global') || {};
+  const webEnabled = globalSettings.webServerEnabled !== undefined
+    ? globalSettings.webServerEnabled
+    : SETTING_DEFAULTS.webServerEnabled;
+  const webPort = globalSettings.webServerPort || SETTING_DEFAULTS.webServerPort;
+
+  if (webEnabled) {
+    try {
+      webServer = createWebServer({
+        port: webPort,
+        host: '0.0.0.0',
+        publicDir: path.join(__dirname, 'public'),
+        nodeModulesDir: path.join(__dirname, 'node_modules'),
+        handlers: apiHandlers,
+        onWsMessage: handleWebSocketMessage,
+        log,
+      });
+      setWebBroadcast(webServer.broadcast);
+
+      webServer.server.on('listening', () => {
+        log.info(`[web] Access Switchboard at http://localhost:${webPort}`);
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('status-update', `Web UI available at http://localhost:${webPort}`, 'info');
+          broadcastToWeb('status-update', `Web UI available at http://localhost:${webPort}`, 'info');
+        }
+      });
+
+      webServer.server.on('error', (err) => {
+        if (err.code === 'EADDRINUSE') {
+          log.error(`[web] Port ${webPort} is already in use`);
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('status-update', `Web server port ${webPort} is already in use. Change the port in Global Settings.`, 'error');
+            broadcastToWeb('status-update', `Web server port ${webPort} is already in use`, 'error');
+          }
+        } else {
+          log.error(`[web] Server error: ${err.message}`);
+        }
+        webServer = null;
+      });
+    } catch (err) {
+      log.error(`[web] Failed to start: ${err.message}`);
+      webServer = null;
+    }
+  }
+
   // Warm up node-pty so first real spawn is fast
   setTimeout(warmupPty, 500);
 
@@ -1602,6 +1724,12 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', () => {
+  // Stop web server
+  if (webServer) {
+    webServer.stop().catch(() => {});
+    webServer = null;
+  }
+
   // Shut down all MCP servers
   shutdownAllMcp();
 
